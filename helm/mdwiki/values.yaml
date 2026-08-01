@@ -1,0 +1,92 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/k2patel/mdwiki
+  tag: ""
+  digest: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+branding:
+  siteName: MDWiki
+  description: A portable Markdown knowledge base
+  copyright: "MDWiki · Powered by MDWiki"
+  hero:
+    eyebrow: Portable Markdown knowledge base
+    title: Find it. Fix it. Share it.
+    accent: Your documentation, on your infrastructure.
+    description: Searchable Markdown with automatic topic indexing, clean URLs, and storage you control.
+  topics: "Guides,Operations,Reference,Runbooks,Notes"
+  colors:
+    primaryLight: "#123047"
+    primaryDark: "#0b1828"
+    accentLight: "#075f80"
+    accentDark: "#63cbe8"
+  repository:
+    url: ""
+    name: ""
+    editUri: ""
+
+admin:
+  # Secret must contain `username` and `password`. When empty, /admin is disabled.
+  existingSecret: ""
+  usernameKey: username
+  passwordKey: password
+
+persistence:
+  enabled: true
+  existingClaim: ""
+  storageClass: ""
+  accessModes:
+    - ReadWriteOnce
+  size: 2Gi
+  annotations: {}
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+  externalTrafficPolicy: ""
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: wiki.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 50m
+    memory: 128Mi
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+
+{% block extrahead %}
+  {{ super() }}
+  <style>
+    :root {
+      --mdwiki-primary-light: {{ config.extra.brand.primary_light | default('#123047') }};
+      --mdwiki-primary-dark: {{ config.extra.brand.primary_dark | default('#0b1828') }};
+      --mdwiki-accent-light: {{ config.extra.brand.accent_light | default('#075f80') }};
+      --mdwiki-accent-dark: {{ config.extra.brand.accent_dark | default('#63cbe8') }};
+    }
+  </style>
+  <link rel="stylesheet" href="{{ 'assets/stylesheets/mdwiki.css' | url }}">
+{% endblock %}
+
+{% block scripts %}
+  {{ super() }}
+  <script src="{{ 'assets/javascripts/mdwiki.js' | url }}"></script>
+{% endblock %}

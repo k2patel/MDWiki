@@ -1,0 +1,76 @@
+site_name: MDWiki
+site_description: A portable Markdown knowledge base
+docs_dir: docs
+site_dir: site
+
+hooks:
+  - hooks/topic_index.py
+
+theme:
+  name: material
+  custom_dir: overrides
+  language: en
+  font: false
+  icon:
+    logo: material/console
+  features:
+    - content.action.edit
+    - content.action.view
+    - content.code.copy
+    - navigation.footer
+    - navigation.instant
+    - navigation.path
+    - navigation.sections
+    - navigation.top
+    - search.highlight
+    - search.share
+    - search.suggest
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark appearance
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light appearance
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.caret
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.tilde
+
+extra:
+  generator: false
+  admin_enabled: false
+  brand:
+    eyebrow: Portable Markdown knowledge base
+    title: Find it. Fix it. Share it.
+    accent: Your documentation, on your infrastructure.
+    description: Searchable Markdown with automatic topic indexing, clean URLs, and storage you control.
+    topics:
+      - Guides
+      - Operations
+      - Reference
+      - Runbooks
+      - Notes
+
+copyright: MDWiki · Markdown knowledge base

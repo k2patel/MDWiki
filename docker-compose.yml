@@ -1,0 +1,24 @@
+services:
+  mdwiki:
+    build:
+      context: .
+    image: mdwiki:local
+    ports:
+      - "8080:8080"
+    read_only: true
+    environment:
+      MDWIKI_SITE_NAME: MDWiki
+      MDWIKI_ADMIN_USER: ${MDWIKI_ADMIN_USER:-admin}
+      MDWIKI_ADMIN_PASSWORD: ${MDWIKI_ADMIN_PASSWORD:-}
+    volumes:
+      - mdwiki-content:/data/mdwiki
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+
+volumes:
+  mdwiki-content:

@@ -1,0 +1,8 @@
+{{- if eq .Values.service.type "LoadBalancer" }}
+MDWiki is exposed through LoadBalancer service {{ include "mdwiki.fullname" . }}.
+Run:
+  kubectl -n {{ .Release.Namespace }} get service {{ include "mdwiki.fullname" . }}
+{{- else }}
+Forward the service locally with:
+  kubectl -n {{ .Release.Namespace }} port-forward service/{{ include "mdwiki.fullname" . }} 8080:{{ .Values.service.port }}
+{{- end }}

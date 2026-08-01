@@ -1,0 +1,128 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "mdwiki.fullname" . }}
+  labels:
+    {{- include "mdwiki.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "mdwiki.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "mdwiki.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: web
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: mdwiki
+          {{- if .Values.image.digest }}
+          image: "{{ .Values.image.repository }}@{{ .Values.image.digest }}"
+          {{- else }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          {{- end }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: MDWIKI_SITE_NAME
+              value: {{ .Values.branding.siteName | quote }}
+            - name: MDWIKI_SITE_DESCRIPTION
+              value: {{ .Values.branding.description | quote }}
+            - name: MDWIKI_COPYRIGHT
+              value: {{ .Values.branding.copyright | quote }}
+            - name: MDWIKI_HERO_EYEBROW
+              value: {{ .Values.branding.hero.eyebrow | quote }}
+            - name: MDWIKI_HERO_TITLE
+              value: {{ .Values.branding.hero.title | quote }}
+            - name: MDWIKI_HERO_ACCENT
+              value: {{ .Values.branding.hero.accent | quote }}
+            - name: MDWIKI_HERO_DESCRIPTION
+              value: {{ .Values.branding.hero.description | quote }}
+            - name: MDWIKI_TOPICS
+              value: {{ .Values.branding.topics | quote }}
+            - name: MDWIKI_PRIMARY_LIGHT
+              value: {{ .Values.branding.colors.primaryLight | quote }}
+            - name: MDWIKI_PRIMARY_DARK
+              value: {{ .Values.branding.colors.primaryDark | quote }}
+            - name: MDWIKI_ACCENT_LIGHT
+              value: {{ .Values.branding.colors.accentLight | quote }}
+            - name: MDWIKI_ACCENT_DARK
+              value: {{ .Values.branding.colors.accentDark | quote }}
+            - name: MDWIKI_REPO_URL
+              value: {{ .Values.branding.repository.url | quote }}
+            - name: MDWIKI_REPO_NAME
+              value: {{ .Values.branding.repository.name | quote }}
+            - name: MDWIKI_EDIT_URI
+              value: {{ .Values.branding.repository.editUri | quote }}
+            {{- with .Values.admin.existingSecret }}
+            - name: MDWIKI_ADMIN_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ . | quote }}
+                  key: {{ $.Values.admin.usernameKey | quote }}
+            - name: MDWIKI_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ . | quote }}
+                  key: {{ $.Values.admin.passwordKey | quote }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+          volumeMounts:
+            - name: content
+              mountPath: /data/mdwiki
+            - name: runtime
+              mountPath: /tmp
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+      volumes:
+        - name: content
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.existingClaim | default (include "mdwiki.fullname" .) }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: runtime
+          emptyDir:
+            sizeLimit: 1Gi
+      terminationGracePeriodSeconds: 10
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -1,0 +1,35 @@
+{% extends "main.html" %}
+
+{% block content %}
+  <section class="wiki-home" aria-labelledby="wiki-home-title">
+    <div class="wiki-home__rail" aria-hidden="true">
+      <span></span><span></span><span></span>
+    </div>
+    <div class="wiki-home__copy">
+      <p class="wiki-home__eyebrow">{{ config.extra.brand.eyebrow }}</p>
+      <h1 id="wiki-home-title">{{ config.extra.brand.title }}<br><em>{{ config.extra.brand.accent }}</em></h1>
+      <p class="wiki-home__lede">{{ config.extra.brand.description }}</p>
+      <div class="wiki-home__actions">
+        <button class="wiki-home__search" type="button" data-wiki-search>
+          <span class="twemoji">{% include ".icons/material/magnify.svg" %}</span>
+          Search {{ config.site_name }}
+        </button>
+        <a class="wiki-home__secondary" href="{{ 'topics/' | url }}">Browse by topic</a>
+      </div>
+    </div>
+    <div class="wiki-home__scope" aria-label="Topics covered">
+      {% for topic in config.extra.brand.topics %}<span>{{ topic }}</span>{% endfor %}
+    </div>
+    <div class="wiki-home__contribute">
+      <span>Keep the knowledge base current</span>
+      {% if config.extra.admin_enabled %}
+        <a href="{{ '/admin' | url }}">Create or upload a page</a>
+      {% elif config.repo_url %}
+        <a href="{{ config.repo_url }}">Contribute in the repository</a>
+      {% endif %}
+    </div>
+  </section>
+  <div class="wiki-home-content">
+    {{ super() }}
+  </div>
+{% endblock %}

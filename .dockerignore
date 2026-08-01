@@ -1,0 +1,17 @@
+.git
+.github
+.gitea
+.venv
+venv
+data
+docs
+content
+site
+conversion-report.json
+__pycache__
+*.pyc
+tests
+tools
+helm
+README.md
+LICENSE
