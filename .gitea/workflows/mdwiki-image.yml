@@ -142,7 +142,7 @@ jobs:
             --set-string image.digest="${{ steps.build.outputs.digest }}" \
             --set 'imagePullSecrets[0].name=gitea-registry' \
             --set service.type=LoadBalancer \
-            --set service.externalTrafficPolicy=Local \
+            --set service.externalTrafficPolicy=Cluster \
             --set persistence.storageClass="$CONTENT_STORAGE_CLASS" \
             --set persistence.size="$CONTENT_STORAGE_SIZE" \
             --set-string branding.siteName="$MDWIKI_SITE_NAME" \
