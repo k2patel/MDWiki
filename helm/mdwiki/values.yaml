@@ -49,6 +49,9 @@ service:
   targetPort: 8080
   externalTrafficPolicy: ""
 
+build:
+  strict: false
+
 ingress:
   enabled: false
   className: ""

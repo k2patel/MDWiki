@@ -5,13 +5,19 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import threading
 import unittest
+from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from server import PageConflictError, WikiHandler, WikiState, create_server, legacy_redirect
+from server import PageConflictError, WikiHandler, WikiState, _environment_flag, create_server, legacy_redirect
 
 
 class ServerTests(unittest.TestCase):
+    def test_strict_mode_is_opt_in(self) -> None:
+        self.assertFalse(_environment_flag("MDWIKI_TEST_MISSING"))
+        with patch.dict("os.environ", {"MDWIKI_TEST_STRICT": "true"}):
+            self.assertTrue(_environment_flag("MDWIKI_TEST_STRICT"))
+
     def test_static_content_and_health(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)

@@ -81,6 +81,8 @@ helm upgrade --install mdwiki helm/mdwiki \
 
 The chart creates a 2 GiB `ReadWriteOnce` PVC by default. Use `persistence.existingClaim` for an existing volume, or select a storage class with `persistence.storageClass`. MDWiki defaults to one replica because a single writable content volume and synchronous rebuilds are the safest portable behavior.
 
+Runtime Markdown warnings are non-fatal by default so a broken link or imperfect imported page cannot stop the wiki. Set `build.strict=true` in Helm (or `MDWIKI_STRICT=true` outside Kubernetes) when warnings should fail a build. The chart's startup probe allows up to ten minutes for a large content volume to be indexed before liveness checks begin.
+
 Enable uploads with a Kubernetes Secret:
 
 ```bash

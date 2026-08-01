@@ -2,7 +2,7 @@ apiVersion: v2
 name: mdwiki
 description: Portable Markdown wiki with persistent content storage
 type: application
-version: 0.2.0
+version: 0.2.1
 appVersion: "1.0.0"
 maintainers:
   - name: k2patel

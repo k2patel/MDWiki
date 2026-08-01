@@ -8,6 +8,7 @@ import hashlib
 import hmac
 import html
 import json
+import logging
 import os
 import re
 import shutil
@@ -27,6 +28,13 @@ MAX_SINGLE_REQUEST_BYTES = MAX_PAGE_BYTES + 64 * 1024
 MAX_BATCH_REQUEST_BYTES = 32 * 1024 * 1024
 MAX_BATCH_PAGES = 1000
 COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def _environment_flag(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 class PageConflictError(ValueError):
@@ -178,7 +186,10 @@ class WikiState:
                     config_file=str(self.config_path),
                     docs_dir=str(docs_root),
                     site_dir=str(staged_site),
-                    strict=True,
+                    # A wiki accepts operator-supplied pages at runtime. Broken
+                    # links and other Markdown warnings must not take the whole
+                    # service down; strict mode remains available as an opt-in.
+                    strict=_environment_flag("MDWIKI_STRICT"),
                 )
                 config["site_name"] = os.environ.get("MDWIKI_SITE_NAME", "MDWiki")
                 config["site_description"] = os.environ.get("MDWIKI_SITE_DESCRIPTION", "A portable Markdown knowledge base")
@@ -518,6 +529,10 @@ def create_server(root: Path, port: int, state: WikiState | None = None) -> Thre
 
 
 def main() -> None:
+    logging.basicConfig(
+        level=os.environ.get("MDWIKI_LOG_LEVEL", "INFO").upper(),
+        format="%(levelname)s %(name)s: %(message)s",
+    )
     content_root = Path(os.environ.get("MDWIKI_CONTENT_DIR", "/data/mdwiki"))
     site_root = Path(os.environ.get("MDWIKI_SITE_DIR", "/tmp/mdwiki-site"))
     config_path = Path(os.environ.get("MDWIKI_CONFIG", "/app/mkdocs.yml"))
