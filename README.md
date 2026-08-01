@@ -10,7 +10,7 @@ The application is MIT licensed, runs as a non-root distroless container, suppor
 - Browser full-text search generated from all Markdown pages
 - Clean URLs such as `/pianobar` and `/title/Pianobar`
 - Redirects for `doku.php?id=wiki:syntax` and legacy media endpoints
-- Optional Basic-authenticated page creation and Markdown upload at `/admin`
+- Optional Basic-authenticated page creation, Markdown upload, and whole-folder import at `/admin`
 - Runtime branding, homepage text, topic labels, repository links, and light/dark colors
 - Helm deployment with a content PVC, ephemeral build volume, probes, and restricted security context
 - Generic DokuWiki-to-Markdown migration tool
@@ -52,6 +52,23 @@ To enable browser publishing, provide credentials through secrets rather than ba
 ```bash
 -e MDWIKI_ADMIN_USER=editor -e MDWIKI_ADMIN_PASSWORD='use-a-secret'
 ```
+
+The publishing console supports either one page or a folder containing up to 1,000 nested `.md` files. Before a folder import it shows the page count, payload size, selected root, and destination paths. Existing pages are protected unless the operator explicitly enables replacement. The server validates the complete batch, writes each page atomically to the content volume, and rebuilds topics and search once.
+
+For automation, authenticated clients can send the same batch operation directly:
+
+```json
+POST /api/pages/import
+{
+  "overwrite": false,
+  "pages": [
+    {"path": "handbook/index.md", "content": "# Handbook"},
+    {"path": "handbook/ssh.md", "content": "# SSH"}
+  ]
+}
+```
+
+Batch requests are limited to 32 MiB, 1,000 pages, and 2 MiB per page.
 
 ## Kubernetes
 

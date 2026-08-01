@@ -22,8 +22,19 @@ from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 LEGACY_PAGE_ENDPOINTS = {"/", "/doku.php", "/index.php"}
 LEGACY_MEDIA_ENDPOINTS = {"/lib/exe/fetch.php", "/lib/exe/detail.php"}
-MAX_UPLOAD_BYTES = 2 * 1024 * 1024
+MAX_PAGE_BYTES = 2 * 1024 * 1024
+MAX_SINGLE_REQUEST_BYTES = MAX_PAGE_BYTES + 64 * 1024
+MAX_BATCH_REQUEST_BYTES = 32 * 1024 * 1024
+MAX_BATCH_PAGES = 1000
 COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+class PageConflictError(ValueError):
+    """Raised when a protected bulk import would replace existing pages."""
+
+    def __init__(self, paths: list[str]) -> None:
+        self.paths = paths
+        super().__init__(f"{len(paths)} page path{'s' if len(paths) != 1 else ''} already exist")
 
 
 def _normalize_part(value: str) -> str:
@@ -120,6 +131,7 @@ class WikiState:
         self.admin_user = os.environ.get("MDWIKI_ADMIN_USER", "admin")
         self.admin_password = os.environ.get("MDWIKI_ADMIN_PASSWORD", "")
         self.lock = threading.Lock()
+        self.mutation_lock = threading.Lock()
         self.ready = False
         self.last_error = ""
         self.last_built = 0.0
@@ -222,31 +234,75 @@ class WikiState:
             return False
         return hmac.compare_digest(user, self.admin_user) and hmac.compare_digest(password, self.admin_password)
 
-    def save_page(self, requested_path: str, content: str) -> tuple[Path, str]:
-        pure = PurePosixPath(requested_path.strip().lstrip("/"))
+    def normalize_page_path(self, requested_path: str) -> PurePosixPath:
+        raw_path = requested_path.strip()
+        if not raw_path or raw_path.startswith("/") or "\\" in raw_path or any(ord(character) < 32 for character in raw_path):
+            raise ValueError("Invalid page path")
+        pure = PurePosixPath(raw_path)
         if pure.is_absolute() or not pure.parts or any(part in {"", ".", ".."} for part in pure.parts):
             raise ValueError("Invalid page path")
-        if any(not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_. -]*", part) for part in pure.parts):
-            raise ValueError("Use letters, numbers, spaces, underscores, dots, and hyphens in page paths")
         raw_parts = list(pure.parts)
         filename = PurePosixPath(raw_parts[-1])
         stem = filename.stem if filename.suffix.lower() == ".md" else filename.name
         normalized_parts = [_normalize_part(part) for part in raw_parts[:-1]] + [f"{_normalize_part(stem)}.md"]
         if any(not part or part == ".md" for part in normalized_parts):
             raise ValueError("Page path must contain a valid name")
-        pure = PurePosixPath(*normalized_parts)
-        target = self.content_root.joinpath(*pure.parts).resolve()
-        if self.content_root not in target.parents:
-            raise ValueError("Invalid page path")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        temporary = target.with_name(f".{target.name}.upload-{os.getpid()}-{threading.get_ident()}")
-        temporary.write_text(content, encoding="utf-8")
-        os.replace(temporary, target)
-        page_parts = list(pure.with_suffix("").parts)
+        return PurePosixPath(*normalized_parts)
+
+    @staticmethod
+    def page_location(path: PurePosixPath) -> str:
+        page_parts = list(path.with_suffix("").parts)
         if page_parts[-1] == "index":
             page_parts.pop()
-        location = "/" if not page_parts else "/" + "/".join(quote(part, safe="._-") for part in page_parts) + "/"
-        return target, location
+        return "/" if not page_parts else "/" + "/".join(quote(part, safe="._-") for part in page_parts) + "/"
+
+    def save_pages(self, pages: list[tuple[str, str]], overwrite: bool = False) -> list[tuple[Path, str]]:
+        if not pages or len(pages) > MAX_BATCH_PAGES:
+            raise ValueError(f"Import between 1 and {MAX_BATCH_PAGES} Markdown pages at a time")
+
+        planned: list[tuple[PurePosixPath, Path, str]] = []
+        seen: set[PurePosixPath] = set()
+        for requested_path, content in pages:
+            if not isinstance(requested_path, str) or not isinstance(content, str):
+                raise ValueError("Every page needs a text path and Markdown content")
+            if not content.strip():
+                raise ValueError(f"Markdown content cannot be empty: {requested_path}")
+            if len(content.encode("utf-8")) > MAX_PAGE_BYTES:
+                raise ValueError(f"Markdown page exceeds 2 MiB: {requested_path}")
+            pure = self.normalize_page_path(requested_path)
+            if pure in seen:
+                raise ValueError(f"Two selected files normalize to the same path: {pure.as_posix()}")
+            seen.add(pure)
+            target = self.content_root.joinpath(*pure.parts).resolve()
+            if self.content_root not in target.parents:
+                raise ValueError("Invalid page path")
+            planned.append((pure, target, content))
+
+        conflicts = [pure.as_posix() for pure, target, _ in planned if target.exists()]
+        if conflicts and not overwrite:
+            raise PageConflictError(conflicts)
+
+        saved: list[tuple[Path, str]] = []
+        for pure, target, content in planned:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            temporary = target.with_name(f".{target.name}.upload-{os.getpid()}-{threading.get_ident()}")
+            try:
+                temporary.write_text(content, encoding="utf-8")
+                os.replace(temporary, target)
+            finally:
+                temporary.unlink(missing_ok=True)
+            saved.append((target, self.page_location(pure)))
+        return saved
+
+    def publish_pages(self, pages: list[tuple[str, str]], overwrite: bool = False) -> list[tuple[Path, str]]:
+        """Write a validated batch and rebuild search/topics exactly once."""
+        with self.mutation_lock:
+            saved = self.save_pages(pages, overwrite=overwrite)
+            self.rebuild()
+            return saved
+
+    def save_page(self, requested_path: str, content: str) -> tuple[Path, str]:
+        return self.save_pages([(requested_path, content)], overwrite=True)[0]
 
 
 class WikiHandler(SimpleHTTPRequestHandler):
@@ -278,10 +334,13 @@ class WikiHandler(SimpleHTTPRequestHandler):
         super().do_HEAD()
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib handler API
-        if urlsplit(self.path).path != "/api/pages":
+        path = urlsplit(self.path).path
+        if path == "/api/pages":
+            self._upload_page()
+        elif path == "/api/pages/import":
+            self._import_pages()
+        else:
             self.send_error(404, "Not found")
-            return
-        self._upload_page()
 
     def _legacy_response(self) -> bool:
         handled, location = legacy_redirect(self.path, Path(self.directory))
@@ -342,40 +401,94 @@ class WikiHandler(SimpleHTTPRequestHandler):
     def _upload_page(self) -> None:
         if not self._authenticate():
             return
-        if self.headers.get_content_type() != "application/json":
-            self.send_error(415, "Expected application/json")
+        payload = self._read_json(MAX_SINGLE_REQUEST_BYTES)
+        if payload is None:
             return
+        try:
+            requested_path = payload["path"]
+            content = payload["content"]
+            if not isinstance(requested_path, str) or not isinstance(content, str):
+                raise ValueError("Page path and Markdown content must be text")
+            assert self.state is not None
+            saved, location = self.state.publish_pages([(requested_path, content)], overwrite=True)[0]
+            self._send_json(
+                201,
+                {"saved": saved.relative_to(self.state.content_root).as_posix(), "url": location},
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            self._send_json(400, {"error": str(exc)})
+        except Exception as exc:
+            self._send_json(500, {"error": f"Page saved but the site rebuild failed: {exc}"})
+
+    def _import_pages(self) -> None:
+        if not self._authenticate():
+            return
+        payload = self._read_json(MAX_BATCH_REQUEST_BYTES)
+        if payload is None:
+            return
+        try:
+            raw_pages = payload["pages"]
+            overwrite = payload.get("overwrite", False)
+            if not isinstance(raw_pages, list) or not isinstance(overwrite, bool):
+                raise ValueError("Pages must be a list and overwrite must be true or false")
+            if not raw_pages or len(raw_pages) > MAX_BATCH_PAGES:
+                raise ValueError(f"Import between 1 and {MAX_BATCH_PAGES} Markdown pages at a time")
+            pages: list[tuple[str, str]] = []
+            for page in raw_pages:
+                if not isinstance(page, dict) or not isinstance(page.get("path"), str) or not isinstance(page.get("content"), str):
+                    raise ValueError("Every page needs a text path and Markdown content")
+                pages.append((page["path"], page["content"]))
+            assert self.state is not None
+            saved = self.state.publish_pages(pages, overwrite=overwrite)
+            self._send_json(
+                201,
+                {
+                    "count": len(saved),
+                    "pages": [
+                        {"saved": path.relative_to(self.state.content_root).as_posix(), "url": location}
+                        for path, location in saved
+                    ],
+                },
+            )
+        except PageConflictError as exc:
+            self._send_json(409, {"error": str(exc), "conflicts": exc.paths})
+        except (KeyError, TypeError, ValueError) as exc:
+            self._send_json(400, {"error": str(exc)})
+        except Exception as exc:
+            self._send_json(500, {"error": f"Pages saved but the site rebuild failed: {exc}"})
+
+    def _read_json(self, maximum_bytes: int) -> dict[str, object] | None:
+        if self.headers.get_content_type() != "application/json":
+            self._send_json(415, {"error": "Expected application/json"})
+            return None
         origin = self.headers.get("Origin")
         if origin and urlsplit(origin).netloc != self.headers.get("Host"):
-            self.send_error(403, "Cross-origin writes are not allowed")
-            return
+            self._send_json(403, {"error": "Cross-origin writes are not allowed"})
+            return None
         try:
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
             length = 0
-        if length <= 0 or length > MAX_UPLOAD_BYTES:
-            self.send_error(413, "Page must be between 1 byte and 2 MiB")
-            return
+        if length <= 0 or length > maximum_bytes:
+            self._send_json(413, {"error": f"Request must be between 1 byte and {maximum_bytes // (1024 * 1024)} MiB"})
+            return None
         try:
             payload = json.loads(self.rfile.read(length))
-            requested_path = str(payload["path"])
-            content = str(payload["content"])
-            if not content.strip():
-                raise ValueError("Markdown content cannot be empty")
-            assert self.state is not None
-            saved, location = self.state.save_page(requested_path, content)
-            self.state.rebuild()
-            body = json.dumps({"saved": saved.relative_to(self.state.content_root).as_posix(), "url": location}).encode()
-            self.send_response(201)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(body)
-        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-            self.send_error(400, str(exc))
-        except Exception as exc:
-            self.send_error(500, f"Page saved but the site rebuild failed: {exc}")
+            if not isinstance(payload, dict):
+                raise ValueError("JSON request must be an object")
+            return payload
+        except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
+            self._send_json(400, {"error": f"Invalid JSON: {exc}"})
+            return None
+
+    def _send_json(self, status: int, payload: dict[str, object]) -> None:
+        body = json.dumps(payload, separators=(",", ":")).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
 
     def end_headers(self) -> None:
         self.send_header("X-Content-Type-Options", "nosniff")
