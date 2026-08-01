@@ -146,12 +146,12 @@ jobs:
             --set persistence.storageClass="$CONTENT_STORAGE_CLASS" \
             --set persistence.size="$CONTENT_STORAGE_SIZE" \
             --set-string branding.siteName="$MDWIKI_SITE_NAME" \
-            --set-string branding.description="Linux, Unix, infrastructure, and operations notes" \
+            --set-string branding.description="Linux and Unix infrastructure and operations notes" \
             --set-string branding.hero.eyebrow="Linux operations field manual" \
             --set-string branding.hero.title="Find the command." \
             --set-string branding.hero.accent="Fix the system." \
-            --set-string branding.hero.description="Commands, configurations, and practical infrastructure notes on storage you control." \
-            --set-string branding.topics="Linux,Unix,Shell,Databases,Infrastructure" \
+            --set-string branding.hero.description="Commands and configurations from practical infrastructure notes on storage you control." \
+            --set-string 'branding.topics=Linux\,Unix\,Shell\,Databases\,Infrastructure' \
             "${admin_args[@]}" \
             --wait \
             --timeout 10m
