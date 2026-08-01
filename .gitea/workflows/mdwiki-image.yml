@@ -137,6 +137,7 @@ jobs:
           helm upgrade --install "$RELEASE_NAME" ./helm/mdwiki \
             --namespace "$NAMESPACE" \
             --create-namespace \
+            --force-conflicts \
             --set image.repository="$REGISTRY/$IMAGE_NAME" \
             --set image.tag="${{ steps.tag.outputs.tag }}" \
             --set-string image.digest="${{ steps.build.outputs.digest }}" \
