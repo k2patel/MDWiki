@@ -137,7 +137,7 @@ Copy the resulting `content/` directory into the MDWiki PVC using a temporary ut
 ## Validate
 
 ```bash
-python3 -m unittest discover -s tests -v
+.venv/bin/python -m unittest discover -s tests -v
 helm lint helm/mdwiki
 docker build -t mdwiki:local .
 ```
