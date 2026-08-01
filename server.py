@@ -9,6 +9,7 @@ import hmac
 import html
 import json
 import logging
+import mimetypes
 import os
 import re
 import shutil
@@ -43,6 +44,10 @@ class PageConflictError(ValueError):
     def __init__(self, paths: list[str]) -> None:
         self.paths = paths
         super().__init__(f"{len(paths)} page path{'s' if len(paths) != 1 else ''} already exist")
+
+
+class PageRevisionError(ValueError):
+    """Raised when an editor attempts to overwrite a newer page revision."""
 
 
 def _normalize_part(value: str) -> str:
@@ -260,6 +265,59 @@ class WikiState:
             raise ValueError("Page path must contain a valid name")
         return PurePosixPath(*normalized_parts)
 
+    def content_target(self, requested_path: str) -> tuple[PurePosixPath, Path]:
+        pure = self.normalize_page_path(requested_path)
+        target = self.content_root.joinpath(*pure.parts).resolve()
+        if self.content_root not in target.parents:
+            raise ValueError("Invalid page path")
+        return pure, target
+
+    @staticmethod
+    def page_revision(content: bytes) -> str:
+        return hashlib.sha256(content).hexdigest()
+
+    @staticmethod
+    def page_title(content: str, path: PurePosixPath) -> str:
+        heading = re.search(r"^#\s+(.+?)\s*$", content, re.M)
+        if heading:
+            title = re.sub(r"[*_`<>]", "", heading.group(1)).strip()
+            if title:
+                return title
+        return path.stem.replace("_", " ").replace("-", " ").strip().title()
+
+    def list_pages(self) -> list[dict[str, object]]:
+        pages: list[dict[str, object]] = []
+        for target in sorted(self.content_root.rglob("*.md")):
+            relative = PurePosixPath(target.relative_to(self.content_root).as_posix())
+            raw = target.read_bytes()
+            content = raw.decode("utf-8")
+            stat = target.stat()
+            pages.append(
+                {
+                    "path": relative.as_posix(),
+                    "title": self.page_title(content, relative),
+                    "size": len(raw),
+                    "modified": stat.st_mtime,
+                    "url": self.page_location(relative),
+                }
+            )
+        pages.sort(key=lambda page: (str(page["title"]).casefold(), str(page["path"])))
+        return pages
+
+    def load_page(self, requested_path: str) -> dict[str, object]:
+        pure, target = self.content_target(requested_path)
+        if not target.is_file():
+            raise FileNotFoundError(pure.as_posix())
+        raw = target.read_bytes()
+        content = raw.decode("utf-8")
+        return {
+            "path": pure.as_posix(),
+            "title": self.page_title(content, pure),
+            "content": content,
+            "revision": self.page_revision(raw),
+            "url": self.page_location(pure),
+        }
+
     @staticmethod
     def page_location(path: PurePosixPath) -> str:
         page_parts = list(path.with_suffix("").parts)
@@ -280,13 +338,10 @@ class WikiState:
                 raise ValueError(f"Markdown content cannot be empty: {requested_path}")
             if len(content.encode("utf-8")) > MAX_PAGE_BYTES:
                 raise ValueError(f"Markdown page exceeds 2 MiB: {requested_path}")
-            pure = self.normalize_page_path(requested_path)
+            pure, target = self.content_target(requested_path)
             if pure in seen:
                 raise ValueError(f"Two selected files normalize to the same path: {pure.as_posix()}")
             seen.add(pure)
-            target = self.content_root.joinpath(*pure.parts).resolve()
-            if self.content_root not in target.parents:
-                raise ValueError("Invalid page path")
             planned.append((pure, target, content))
 
         conflicts = [pure.as_posix() for pure, target, _ in planned if target.exists()]
@@ -312,6 +367,23 @@ class WikiState:
             self.rebuild()
             return saved
 
+    def publish_page(
+        self,
+        requested_path: str,
+        content: str,
+        expected_revision: str | None = None,
+    ) -> tuple[Path, str, str]:
+        """Publish one page and reject edits based on a stale revision."""
+        with self.mutation_lock:
+            _, target = self.content_target(requested_path)
+            if expected_revision is not None:
+                current_revision = self.page_revision(target.read_bytes()) if target.is_file() else ""
+                if not hmac.compare_digest(current_revision, expected_revision):
+                    raise PageRevisionError("This page changed after it was opened. Reload it before saving.")
+            saved, location = self.save_pages([(requested_path, content)], overwrite=True)[0]
+            self.rebuild()
+            return saved, location, self.page_revision(saved.read_bytes())
+
     def save_page(self, requested_path: str, content: str) -> tuple[Path, str]:
         return self.save_pages([(requested_path, content)], overwrite=True)[0]
 
@@ -329,8 +401,17 @@ class WikiHandler(SimpleHTTPRequestHandler):
         if path == "/healthz":
             self._health(head_only=False)
             return
+        if path == "/api/pages":
+            self._list_pages()
+            return
+        if path == "/api/page":
+            self._get_page()
+            return
         if path in {"/admin", "/admin/"}:
             self._admin()
+            return
+        if path.startswith("/admin/assets/"):
+            self._admin_asset(path)
             return
         if self._legacy_response():
             return
@@ -350,6 +431,8 @@ class WikiHandler(SimpleHTTPRequestHandler):
             self._upload_page()
         elif path == "/api/pages/import":
             self._import_pages()
+        elif path == "/api/preview":
+            self._preview_page()
         else:
             self.send_error(404, "Not found")
 
@@ -409,6 +492,48 @@ class WikiHandler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _admin_asset(self, request_path: str) -> None:
+        if not self._authenticate():
+            return
+        admin_root = Path(os.environ.get("MDWIKI_ADMIN_FILE", "/app/admin/index.html")).resolve().parent
+        relative = PurePosixPath(unquote(request_path.removeprefix("/admin/assets/")))
+        if relative.is_absolute() or not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
+            self.send_error(404, "Asset not found")
+            return
+        target = admin_root.joinpath(*relative.parts).resolve()
+        if admin_root not in target.parents or not target.is_file():
+            self.send_error(404, "Asset not found")
+            return
+        body = target.read_bytes()
+        content_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "private, max-age=3600")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _list_pages(self) -> None:
+        if not self._authenticate():
+            return
+        assert self.state is not None
+        try:
+            self._send_json(200, {"pages": self.state.list_pages()})
+        except (OSError, UnicodeError) as exc:
+            self._send_json(500, {"error": f"Unable to read the page library: {exc}"})
+
+    def _get_page(self) -> None:
+        if not self._authenticate():
+            return
+        requested_path = (parse_qs(urlsplit(self.path).query).get("path") or [""])[0]
+        assert self.state is not None
+        try:
+            self._send_json(200, self.state.load_page(requested_path))
+        except FileNotFoundError:
+            self._send_json(404, {"error": "Page not found"})
+        except (OSError, UnicodeError, ValueError) as exc:
+            self._send_json(400, {"error": str(exc)})
+
     def _upload_page(self) -> None:
         if not self._authenticate():
             return
@@ -421,11 +546,24 @@ class WikiHandler(SimpleHTTPRequestHandler):
             if not isinstance(requested_path, str) or not isinstance(content, str):
                 raise ValueError("Page path and Markdown content must be text")
             assert self.state is not None
-            saved, location = self.state.publish_pages([(requested_path, content)], overwrite=True)[0]
+            expected_revision = payload.get("revision")
+            if expected_revision is not None and not isinstance(expected_revision, str):
+                raise ValueError("Page revision must be text")
+            saved, location, revision = self.state.publish_page(
+                requested_path,
+                content,
+                expected_revision=expected_revision,
+            )
             self._send_json(
                 201,
-                {"saved": saved.relative_to(self.state.content_root).as_posix(), "url": location},
+                {
+                    "saved": saved.relative_to(self.state.content_root).as_posix(),
+                    "url": location,
+                    "revision": revision,
+                },
             )
+        except PageRevisionError as exc:
+            self._send_json(409, {"error": str(exc)})
         except (KeyError, TypeError, ValueError) as exc:
             self._send_json(400, {"error": str(exc)})
         except Exception as exc:
@@ -467,6 +605,37 @@ class WikiHandler(SimpleHTTPRequestHandler):
             self._send_json(400, {"error": str(exc)})
         except Exception as exc:
             self._send_json(500, {"error": f"Pages saved but the site rebuild failed: {exc}"})
+
+    def _preview_page(self) -> None:
+        if not self._authenticate():
+            return
+        payload = self._read_json(MAX_SINGLE_REQUEST_BYTES)
+        if payload is None:
+            return
+        try:
+            content = payload["content"]
+            if not isinstance(content, str) or len(content.encode("utf-8")) > MAX_PAGE_BYTES:
+                raise ValueError("Preview content must be Markdown no larger than 2 MiB")
+            from markdown import Markdown
+
+            renderer = Markdown(
+                extensions=[
+                    "admonition",
+                    "attr_list",
+                    "def_list",
+                    "footnotes",
+                    "tables",
+                    "toc",
+                    "pymdownx.caret",
+                    "pymdownx.highlight",
+                    "pymdownx.superfences",
+                    "pymdownx.tilde",
+                ],
+                extension_configs={"toc": {"permalink": True}},
+            )
+            self._send_json(200, {"html": renderer.convert(content)})
+        except (KeyError, TypeError, ValueError) as exc:
+            self._send_json(400, {"error": str(exc)})
 
     def _read_json(self, maximum_bytes: int) -> dict[str, object] | None:
         if self.headers.get_content_type() != "application/json":

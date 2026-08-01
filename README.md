@@ -10,7 +10,7 @@ The application is MIT licensed, runs as a non-root distroless container, suppor
 - Browser full-text search generated from all Markdown pages
 - Clean URLs such as `/pianobar` and `/title/Pianobar`
 - Redirects for `doku.php?id=wiki:syntax` and legacy media endpoints
-- Optional Basic-authenticated page creation, Markdown upload, and whole-folder import at `/admin`
+- Optional Basic-authenticated content studio at `/admin` with page browsing, revision-safe editing, preview, and file/folder import
 - Runtime branding, homepage text, topic labels, repository links, and light/dark colors
 - Helm deployment with a content PVC, ephemeral build volume, probes, and restricted security context
 - Generic DokuWiki-to-Markdown migration tool
@@ -53,7 +53,9 @@ To enable browser publishing, provide credentials through secrets rather than ba
 -e MDWIKI_ADMIN_USER=editor -e MDWIKI_ADMIN_PASSWORD='use-a-secret'
 ```
 
-The publishing console supports either one page or a folder containing up to 1,000 nested `.md` files. Before a folder import it shows the page count, payload size, selected root, and destination paths. Existing pages are protected unless the operator explicitly enables replacement. The server validates the complete batch, writes each page atomically to the content volume, and rebuilds topics and search once.
+The content studio has two focused workspaces. **Edit** browses the Markdown pages on the content volume, creates pages, loads existing source, previews it with the server's Markdown extensions, and prevents a stale browser tab from overwriting a newer revision. **Import** accepts individual files or a folder containing up to 1,000 nested `.md` files. It shows page count, payload size, selected root, and destination paths before writing. Existing imported pages remain protected unless the operator explicitly enables replacement.
+
+The editor uses the browser-ready MIT-licensed TinyMDE release vendored under `admin/vendor/`. MDWiki does not use Node.js, npm, a CDN, or a JavaScript build step.
 
 For automation, authenticated clients can send the same batch operation directly:
 

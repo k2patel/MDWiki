@@ -9,7 +9,7 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from server import PageConflictError, WikiHandler, WikiState, _environment_flag, create_server, legacy_redirect
+from server import PageConflictError, PageRevisionError, WikiHandler, WikiState, _environment_flag, create_server, legacy_redirect
 
 
 class ServerTests(unittest.TestCase):
@@ -108,6 +108,28 @@ class ServerTests(unittest.TestCase):
             self.assertEqual(len(result), 2)
             self.assertEqual(rebuilds, [True])
 
+    def test_page_library_and_revision_safe_edits(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            state = WikiState(root / "content", root / "site", root / "mkdocs.yml")
+            state.content_root.mkdir()
+            state.rebuild = lambda: None  # type: ignore[method-assign]
+
+            saved, location, revision = state.publish_page("Guides/First Page.md", "# First page\n", "")
+            self.assertEqual(saved.relative_to(state.content_root).as_posix(), "guides/first_page.md")
+            self.assertEqual(location, "/guides/first_page/")
+            self.assertEqual(len(revision), 64)
+
+            loaded = state.load_page("guides/first_page.md")
+            self.assertEqual(loaded["title"], "First page")
+            self.assertEqual(loaded["revision"], revision)
+            self.assertEqual(state.list_pages()[0]["path"], "guides/first_page.md")
+
+            with self.assertRaises(PageRevisionError):
+                state.publish_page("guides/first_page.md", "# Stale edit\n", "not-the-current-revision")
+            _, _, next_revision = state.publish_page("guides/first_page.md", "# Revised\n", revision)
+            self.assertNotEqual(next_revision, revision)
+
     def test_authenticated_batch_import_endpoint(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -153,6 +175,70 @@ class ServerTests(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
                 thread.join(timeout=3)
+
+    def test_authenticated_editor_assets_library_preview_and_revision_conflict(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content_root, site_root, admin_root = root / "content", root / "site", root / "admin"
+            content_root.mkdir()
+            site_root.mkdir()
+            admin_root.mkdir()
+            (site_root / "index.html").write_text("site", encoding="utf-8")
+            (admin_root / "index.html").write_text("<title>{{SITE_NAME}}</title>", encoding="utf-8")
+            (admin_root / "admin.js").write_text("window.editorReady = true;", encoding="utf-8")
+            (content_root / "guide.md").write_text("# Guide\n", encoding="utf-8")
+
+            state = WikiState(content_root, site_root, root / "mkdocs.yml")
+            state.admin_user = "editor"
+            state.admin_password = "secret"
+            state.rebuild = lambda: None  # type: ignore[method-assign]
+            authorization = base64.b64encode(b"editor:secret").decode()
+            headers = {"Authorization": f"Basic {authorization}", "Accept": "application/json"}
+
+            with patch.dict(
+                "os.environ",
+                {"MDWIKI_ADMIN_FILE": str(admin_root / "index.html"), "MDWIKI_SITE_NAME": "Test Wiki"},
+            ):
+                server = create_server(site_root, 0, state)
+                thread = threading.Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+                base_url = f"http://127.0.0.1:{server.server_port}"
+                try:
+                    with urlopen(Request(f"{base_url}/admin", headers=headers), timeout=3) as response:
+                        self.assertEqual(response.status, 200)
+                        self.assertIn(b"Test Wiki", response.read())
+                    with urlopen(Request(f"{base_url}/admin/assets/admin.js", headers=headers), timeout=3) as response:
+                        self.assertEqual(response.headers.get_content_type(), "text/javascript")
+
+                    with urlopen(Request(f"{base_url}/api/pages", headers=headers), timeout=3) as response:
+                        self.assertEqual(json.load(response)["pages"][0]["path"], "guide.md")
+                    with urlopen(Request(f"{base_url}/api/page?path=guide.md", headers=headers), timeout=3) as response:
+                        loaded = json.load(response)
+                    self.assertEqual(loaded["content"], "# Guide\n")
+
+                    preview = Request(
+                        f"{base_url}/api/preview",
+                        data=json.dumps({"content": "# Preview\n\n| A | B |\n|---|---|\n| 1 | 2 |"}).encode(),
+                        headers={**headers, "Content-Type": "application/json"},
+                    )
+                    with urlopen(preview, timeout=3) as response:
+                        self.assertIn("<table>", json.load(response)["html"])
+
+                    stale_save = Request(
+                        f"{base_url}/api/pages",
+                        data=json.dumps(
+                            {"path": "guide.md", "content": "# Stale\n", "revision": "wrong-revision"}
+                        ).encode(),
+                        headers={**headers, "Content-Type": "application/json"},
+                    )
+                    with self.assertRaises(HTTPError) as conflict:
+                        urlopen(stale_save, timeout=3)
+                    self.assertEqual(conflict.exception.code, 409)
+                    conflict.exception.close()
+                finally:
+                    server.shutdown()
+                    server.server_close()
+                    thread.join(timeout=3)
 
 
 if __name__ == "__main__":
