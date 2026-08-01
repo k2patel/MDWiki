@@ -95,6 +95,23 @@ helm upgrade --install mdwiki helm/mdwiki \
 
 All visual identity is configured below `branding` in `helm/mdwiki/values.yaml`. The default palette has WCAG-friendly contrast in automatic light and dark modes.
 
+### Gitea build and deployment
+
+The workflow at `.gitea/workflows/mdwiki-image.yml` follows the `lkpsnew` deployment pattern. Every push to Gitea `main` validates the application, builds and pushes `git.k2patel.in/k2patel/mdwiki` for `linux/amd64`, and deploys the exact image digest with Helm. The deployment uses namespace/release `mdwiki`, an `nfs-csi` content PVC, and a LoadBalancer service.
+
+Configure these Gitea Actions values:
+
+- Secret `KUBECONFIG_DATA`: base64-encoded kubeconfig
+- Secret `CONTAINER_TOKEN`: Gitea registry token
+- Variable `CONTAINER_USER`: Gitea registry username
+- Optional secret `MDWIKI_ADMIN_PASSWORD`: enables `/admin`
+- Optional variable `MDWIKI_ADMIN_USER`: defaults to `admin`
+- Optional variable `CONTENT_STORAGE_CLASS`: defaults to `nfs-csi`
+- Optional variable `CONTENT_STORAGE_SIZE`: defaults to `2Gi`
+- Optional variable `MDWIKI_SITE_NAME`: defaults to `Linux Wiki`
+
+The Markdown data remains on the PVC and is never included in the workflow checkout or container image.
+
 ## Import DokuWiki content
 
 The migration tool is standard-library-only and accepts any DokuWiki pages/media tree:

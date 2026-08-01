@@ -1,0 +1,159 @@
+name: Build and Deploy MDWiki
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  REGISTRY: git.k2patel.in
+  IMAGE_NAME: k2patel/mdwiki
+  NAMESPACE: mdwiki
+  RELEASE_NAME: mdwiki
+
+jobs:
+  build-and-deploy:
+    runs-on: docker
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate application and chart
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tests -v
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Gitea container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ vars.CONTAINER_USER }}
+          password: ${{ secrets.CONTAINER_TOKEN }}
+
+      - name: Determine image tag
+        id: tag
+        run: |
+          set -euo pipefail
+          if [[ "${{ gitea.ref }}" == refs/tags/v* ]]; then
+            tag="${{ gitea.ref_name }}"
+            {
+              echo "tags<<EOF"
+              echo "${REGISTRY}/${IMAGE_NAME}:${tag}"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          else
+            tag="$(git rev-parse --short=12 HEAD)"
+            {
+              echo "tags<<EOF"
+              echo "${REGISTRY}/${IMAGE_NAME}:${tag}"
+              echo "${REGISTRY}/${IMAGE_NAME}:latest"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push distroless image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          platforms: linux/amd64
+          tags: ${{ steps.tag.outputs.tags }}
+
+      - name: Install kubectl
+        run: |
+          set -euo pipefail
+          curl -fsSL -o kubectl "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: latest
+
+      - name: Deploy with Helm
+        env:
+          KUBECONFIG_DATA: ${{ secrets.KUBECONFIG_DATA }}
+          CONTAINER_USER: ${{ vars.CONTAINER_USER }}
+          CONTAINER_TOKEN: ${{ secrets.CONTAINER_TOKEN }}
+          CONTENT_STORAGE_CLASS: ${{ vars.CONTENT_STORAGE_CLASS }}
+          CONTENT_STORAGE_SIZE: ${{ vars.CONTENT_STORAGE_SIZE }}
+          MDWIKI_SITE_NAME: ${{ vars.MDWIKI_SITE_NAME }}
+          MDWIKI_ADMIN_USER: ${{ vars.MDWIKI_ADMIN_USER }}
+          MDWIKI_ADMIN_PASSWORD: ${{ secrets.MDWIKI_ADMIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KUBECONFIG_DATA:-}" ]; then
+            echo "ERROR: KUBECONFIG_DATA secret is empty or unavailable." >&2
+            exit 1
+          fi
+          if [ -z "${CONTAINER_USER:-}" ] || [ -z "${CONTAINER_TOKEN:-}" ]; then
+            echo "ERROR: CONTAINER_USER variable and CONTAINER_TOKEN secret are required." >&2
+            exit 1
+          fi
+
+          CONTENT_STORAGE_CLASS="${CONTENT_STORAGE_CLASS:-nfs-csi}"
+          CONTENT_STORAGE_SIZE="${CONTENT_STORAGE_SIZE:-2Gi}"
+          MDWIKI_SITE_NAME="${MDWIKI_SITE_NAME:-Linux Wiki}"
+          MDWIKI_ADMIN_USER="${MDWIKI_ADMIN_USER:-admin}"
+
+          kubeconfig="/tmp/mdwiki-kubeconfig"
+          trap 'rm -f "${kubeconfig}"' EXIT
+          printf '%s' "$KUBECONFIG_DATA" | base64 -d > "$kubeconfig"
+          if [ ! -s "$kubeconfig" ]; then
+            echo "ERROR: decoded kubeconfig is empty; KUBECONFIG_DATA must be base64 encoded." >&2
+            exit 1
+          fi
+          export KUBECONFIG="$kubeconfig"
+          kubectl config view --minify >/dev/null
+          kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+          kubectl -n "$NAMESPACE" create secret docker-registry gitea-registry \
+            --docker-server="$REGISTRY" \
+            --docker-username="$CONTAINER_USER" \
+            --docker-password="$CONTAINER_TOKEN" \
+            --dry-run=client \
+            -o yaml | kubectl apply -f -
+
+          admin_args=()
+          if [ -n "${MDWIKI_ADMIN_PASSWORD:-}" ]; then
+            kubectl -n "$NAMESPACE" create secret generic mdwiki-admin \
+              --from-literal=username="$MDWIKI_ADMIN_USER" \
+              --from-literal=password="$MDWIKI_ADMIN_PASSWORD" \
+              --dry-run=client \
+              -o yaml | kubectl apply -f -
+            admin_args+=(--set admin.existingSecret=mdwiki-admin)
+          else
+            echo "MDWIKI_ADMIN_PASSWORD is unset; /admin will remain disabled."
+          fi
+
+          helm upgrade --install "$RELEASE_NAME" ./helm/mdwiki \
+            --namespace "$NAMESPACE" \
+            --create-namespace \
+            --set image.repository="$REGISTRY/$IMAGE_NAME" \
+            --set image.tag="${{ steps.tag.outputs.tag }}" \
+            --set-string image.digest="${{ steps.build.outputs.digest }}" \
+            --set 'imagePullSecrets[0].name=gitea-registry' \
+            --set service.type=LoadBalancer \
+            --set service.externalTrafficPolicy=Local \
+            --set persistence.storageClass="$CONTENT_STORAGE_CLASS" \
+            --set persistence.size="$CONTENT_STORAGE_SIZE" \
+            --set-string branding.siteName="$MDWIKI_SITE_NAME" \
+            --set-string branding.description="Linux, Unix, infrastructure, and operations notes" \
+            --set-string branding.hero.eyebrow="Linux operations field manual" \
+            --set-string branding.hero.title="Find the command." \
+            --set-string branding.hero.accent="Fix the system." \
+            --set-string branding.hero.description="Commands, configurations, and practical infrastructure notes on storage you control." \
+            --set-string branding.topics="Linux,Unix,Shell,Databases,Infrastructure" \
+            "${admin_args[@]}" \
+            --wait \
+            --timeout 10m
+
+          kubectl -n "$NAMESPACE" get deployment,pod,service,pvc -l app.kubernetes.io/instance="$RELEASE_NAME"

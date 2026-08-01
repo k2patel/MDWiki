@@ -13,6 +13,3 @@ __pycache__/
 .DS_Store
 .pytest_cache/
 .coverage
-
-# Private deployment automation from the source workspace.
-/.gitea/
